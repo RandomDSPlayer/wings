@@ -1,7 +1,7 @@
 %%
 %%  wings_dialog.erl --
 %%
-%%     This module implements the dialogs.
+%%     This module (re)implements the dialogs using wxWidgets
 %%
 %%  Copyright (c) 2013 Dan Gudmundsson
 %%
@@ -10,6 +10,7 @@
 %%
 
 -module(wings_dialog).
+-define(NEED_ESDL, 1). %% Needs to send mouseevents to camera
 -include("wings.hrl").
 -export([info/3, 
 	 ask/3, ask/4, 
@@ -18,7 +19,9 @@
 -compile(export_all).
 
 -record(in, {key, type, def, wx, validator, data}).
+-record(eh, {dialog, fs, apply, owner, type}).
 
+%% Display a text window (Info converted to html)
 info(Title, Info, Options) ->
     Parent = proplists:get_value(top_frame, Options, get(top_frame)),
     Style  = {style, ?wxDEFAULT_DIALOG_STYLE bor ?wxRESIZE_BORDER},
@@ -35,12 +38,64 @@ info(Title, Info, Options) ->
     wxDialog:destroy(Dialog),
     keep.
 
+
+ask_preview(Cmd, Bool, Title, Qs, St) ->
+    ask(Bool, Title, preview, Qs, preview_fun(Cmd, St)).
+
+dialog_preview(Cmd, Bool, Title, Qs, St) ->
+    dialog(Bool, Title, preview, Qs, preview_fun(Cmd, St)).
+
 %% Currently a modal dialog
 %%   (orginal wings let camera events trough)
-ask(Title, Qs, Fun) ->
-    dialog(true, Title, queries(Qs), Fun).
-ask(Ask, Title, Qs, Fun) ->
-    dialog(Ask, Title, queries(Qs), Fun).
+ask(Title, Qs0, Fun) ->
+    {PreviewCmd, Qs} = preview_cmd(Qs0),
+    dialog(true, Title, PreviewCmd, queries(Qs), Fun).
+ask(Ask, Title, Qs0, Fun) ->
+    {PreviewCmd, Qs} = preview_cmd(Qs0),
+    dialog(Ask, Title, PreviewCmd, queries(Qs), Fun).
+ask(Ask, Title, PreviewCmd, Qs, Fun) ->
+    dialog(Ask, Title, PreviewCmd, queries(Qs), Fun).
+
+dialog(Title, Qs0, Fun) ->
+    {PreviewCmd, Qs} = preview_cmd(Qs0),
+    dialog(true, Title, PreviewCmd, Qs, Fun).
+dialog(Ask, Title, Qs0, Fun) ->
+    {PreviewCmd, Qs} = preview_cmd(Qs0),
+    dialog(Ask, Title, PreviewCmd, Qs, Fun).
+dialog(Ask, Title, PreviewCmd, Qs0, Fun) when is_list(Qs0) ->
+    Qs = {vframe_dialog, Qs0, [{buttons, [ok, cancel]}]},
+    dialog(Ask, Title, PreviewCmd, Qs, Fun);
+dialog(Ask, Title, PreviewCmd, Qs, Fun) when not is_list(Qs) ->
+    case element(1,Qs) of
+	preview_cmd -> error(Qs);
+	drag_preview_cmd -> error(Qs);
+	_Assert -> ok
+    end,
+    {Dialog, Fields} = build_dialog(Ask andalso PreviewCmd, Title, Qs),
+    %% io:format("Enter Dialog ~p ~p ~p~n",[Ask,PreviewCmd, Fields]),
+    enter_dialog(Ask, PreviewCmd, Dialog, Fields, Fun).
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% Helpers
+
+preview_cmd(Preview = {preview, _}) -> Preview;
+preview_cmd(Preview = {drag_preview, _}) -> Preview;
+preview_cmd(Qs) -> {no_preview, Qs}.
+
+command_name({Menu,Cmd}, Res) ->
+    {Menu,{Cmd,Res}};
+command_name({Menu,SubMenu,Cmd}, Res) ->
+    {Menu,{SubMenu,{Cmd,Res}}}.
+
+preview_fun(Cmd, St) ->
+    fun({dialog_preview,Res}) ->
+	    Command = command_name(Cmd, Res),
+	    {preview,Command,St};
+       (cancel) -> St;
+       (Res) ->
+	    Command = command_name(Cmd, Res),
+	    {commit,Command,St}
+    end.
 
 queries(Qs0) ->
     {Labels,Vals} = ask_unzip(Qs0),
@@ -48,30 +103,92 @@ queries(Qs0) ->
       [{vframe,Labels},
        {vframe,Vals}]}].
 
-
-dialog(Title, Qs, Fun) ->
-    dialog(true, Title, Qs, Fun).
-dialog(Ask, Title, Qs0, Fun) when is_list(Qs0) ->
-    Qs = {vframe_dialog, Qs0, [{buttons, [ok, cancel]}]},
-    dialog(Ask, Title, Qs, Fun);
-dialog(Ask, Title, Qs, Fun) when not is_list(Qs) ->
-    {Dialog, Fields} = build_dialog(Ask, Title, Qs),
-    case Ask andalso wxDialog:showModal(Dialog) of
+enter_dialog(false, _, _, Fields, Fun) -> % No dialog return def values
+    Values = [with_key(Field, Def) ||
+		 Field = #in{data=Data, def=Def} <- Fields,
+		 Data =/= ignore],
+    return_result(Fun, Values, wings_wm:this());
+enter_dialog(true, no_preview, Dialog, Fields, Fun) -> %% No preview cmd / modal dialog
+    case wxDialog:showModal(Dialog) of
 	?wxID_CANCEL -> keep;
 	Result ->
-	    Values = [get_output(Ask, Result, Field) ||
+	    Values = [get_output(Result, Field) ||
 			 Field = #in{data=Data} <- Fields,
 			 Data =/= ignore],
-	    Ask andalso wxDialog:destroy(Dialog),
-	    return_result(Fun, Values)
-    end.
+	    wxDialog:destroy(Dialog),
+	    return_result(Fun, Values, wings_wm:this())
+    end;
+enter_dialog(true, PreviewType, Dialog, Fields, Fun) ->
+    Env = wx:get_env(),
+    spawn_link(fun() ->
+		       wx:set_env(Env),
+		       Me = self(),
+		       Forward = fun(Event, _) ->
+					 %% io:format("Send event ~p to wings~n", [Event]),
+					 wxDialog:show(Dialog, [{show,false}]),
+					 wings_wm:psend(dialog_blanket, Event),
+					 Me ! closed
+				 end,
 
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-%% Helpers
+		       wxDialog:connect(Dialog, command_button_clicked,
+					[{id, ?wxID_OK},
+					 {lastId, ?wxID_NO},
+					 {callback,Forward}]),
+		       wxDialog:show(Dialog),
+		       receive closed -> ok end
+	       end),
+    State = #eh{dialog=Dialog, fs=Fields, apply=Fun,
+		owner=wings_wm:this(), type=PreviewType},
+    Op = {push,fun(Ev) -> event_handler(Ev, State) end},
+    {TopW,TopH} = wings_wm:top_size(),
+    wings_wm:new(dialog_blanket, {0,0,highest}, {TopW,TopH}, Op),
+    keep.
 
-get_output(false, _, In=#in{def=Def}) ->
-    with_key(In, Def);
-get_output(true, Result, In) ->
+notify_event_handler(false, _Msg) -> fun() -> ignore end;
+notify_event_handler(no_preview, _) -> fun() -> ignore end;
+notify_event_handler(_, Msg) -> fun() -> wings_wm:psend(dialog_blanket, Msg) end.
+
+event_handler(#wx{id=?wxID_CANCEL},
+	      #eh{dialog=Dialog, apply=Fun, owner=Owner, type=preview_cmd}) ->
+    wxDialog:destroy(Dialog),
+    #st{}=St = Fun(cancel),
+    wings_wm:send(Owner, {update_state,St}),
+    delete;
+event_handler(#wx{id=Result}=_Ev,
+	      #eh{dialog=Dialog, fs=Fields, apply=Fun, owner=Owner}) ->
+    %% io:format("Ev closing ~p~n",[_Ev]),
+    Values = [get_output(Result, Field) ||
+		 Field = #in{data=Data} <- Fields,
+		 Data =/= ignore],
+    wxDialog:destroy(Dialog),
+    return_result(Fun, Values, Owner),
+    delete;
+event_handler(preview, #eh{fs=Fields, apply=Fun, owner=Owner}) ->
+    Values = [get_output(preview, Field) ||
+		 Field = #in{data=Data} <- Fields,
+		 Data =/= ignore],
+    case Fun({dialog_preview,Values}) of
+	{preview,#st{}=St0,#st{}=St} ->
+	    wings_wm:send_after_redraw(Owner, {update_state,St}),
+	    wings_wm:send(Owner, {current_state,St0});
+	{preview,Action,#st{}=St}->
+	    wings_wm:send_after_redraw(Owner, {action,Action}),
+	    wings_wm:send(Owner, {current_state,St});
+	Action when is_tuple(Action); is_atom(Action) ->
+	    io:format("~p:~p: ~p~n",[?MODULE,?LINE,{preview,[Owner,{action,Action}]}]),
+	    wings_wm:send(Owner, {action,Action})
+    end;
+event_handler(#mousebutton{x=X0,y=Y0}=Ev, _) ->
+    {X,Y} = wings_wm:local2global(X0, Y0),
+    Win = wings_wm:geom_below(X, Y),
+    wings_wm:send(Win, {camera,Ev,keep});
+event_handler(#mousemotion{}, _) -> keep;
+event_handler(_Ev, _) ->
+    %% io:format("unhandled Ev ~p~n",[_Ev]),
+    keep.
+
+
+get_output(Result, In) ->
     get_output1(Result, In).
 
 get_output1(_, In=#in{type=checkbox, wx=Ctrl}) ->
@@ -106,15 +223,14 @@ get_output1(Result, In=#in{type=dialog_buttons}) ->
 
 with_key(#in{key=undefined}, Value) -> Value;
 with_key(#in{key=Key}, Value) ->  {Key, Value}.
-   
+
 validate(Fun, Input) ->
     case Fun(Input) of
 	ok -> Input;
 	Str when is_list(Str) -> Str
     end.
 
-return_result(Fun, Values) ->
-    Owner = wings_wm:this(),
+return_result(Fun, Values, Owner) ->
     case Fun(Values) of
 	ignore ->
 	    ok;
@@ -147,20 +263,18 @@ ask_unzip([], Labels, Vals) ->
 build_dialog(false, _Title, Qs) ->
     Fs = build(false, Qs, undefined, undefined, []),
     {undefined, lists:reverse(Fs)};
-build_dialog(true, Title, Qs) ->
+build_dialog(AskType, Title, Qs) ->
     Parent = get(top_frame),
     Style  = {style, ?wxDEFAULT_DIALOG_STYLE bor ?wxRESIZE_BORDER},
     Dialog = wxDialog:new(Parent, ?wxID_ANY, Title, [Style]),
     Panel  = wxPanel:new(Dialog, []),
     Top    = wxBoxSizer:new(?wxVERTICAL),
     Sizer  = wxBoxSizer:new(?wxVERTICAL),
-    Fields0 = build(true, Qs, Panel, Sizer, []),
+    Fields0 = build(AskType, Qs, Panel, Sizer, []),
     wxWindow:setSizer(Panel, Sizer),
-%%    wxSizer:setSizeHints(Sizer, Panel),
     wxSizer:add(Top, Panel, [{proportion, 1}, {flag, ?wxEXPAND bor ?wxALL}, {border, 5}]),
     Fields = setup_buttons(Dialog, Top, Fields0),
     wxWindow:setSizerAndFit(Dialog, Top),
-%%    wxSizer:setSizeHints(Top, Dialog),
     {Dialog, lists:reverse(Fields)}.
 
 setup_buttons(Dialog, Top, [DB=#in{type=dialog_buttons, wx=Fun}|In]) ->
@@ -182,11 +296,16 @@ build(Ask, {vframe_dialog, Qs, Flags}, Parent, Sizer, []) ->
 		     wxSizer:add(TopSizer, Ok, [{proportion, 0},
 						{flag, ?wxEXPAND bor ?wxALL},
 						{border, 5}]),
-		     Close = fun(#wx{id=Id},_) ->
-				     wxDialog:endModal(Dialog, Id)
-			     end,
-		     wxDialog:connect(Dialog, command_button_clicked,
-				      [{id, wxID_NO}, {callback,Close}]),
+		     case Ask of
+			 no_preview -> %% I.e. non preview
+			     Close = fun(#wx{id=Id},_) ->
+					     wxDialog:endModal(Dialog, Id)
+				     end,
+			     wxDialog:connect(Dialog, command_button_clicked,
+					      [{id, ?wxID_NO}, {callback,Close}]);
+			 _ ->
+			     ignore %% Preview connects it self
+		     end,
 		     Ok
 	     end,
     In = build(Ask, {vframe, Qs}, Parent, Sizer, []),
@@ -211,9 +330,10 @@ build(Ask, {hradio, Alternatives, Def}, Parent, Sizer, In) ->
 build(Ask, {hradio, Name, Alternatives, Def}, Parent, Sizer, In) ->
     build_radio(Ask, Name, Def, ?wxRA_SPECIFY_ROWS, Alternatives, Parent, Sizer, In);
 
-build(true, {label, Label}, Parent, Sizer, In) ->
-    build(true, {label, Label, []}, Parent, Sizer, In);
-build(true, {label, Label, Flags}, Parent, Sizer, In) ->
+build(Ask, {label, Label}, Parent, Sizer, In) ->
+    build(Ask, {label, Label, []}, Parent, Sizer, In);
+build(Ask, {label, Label, Flags}, Parent, Sizer, In)
+  when Ask =/= false ->
     Limit = proplists:get_value(break, Flags, infinite),
     {_,Lines0=[First|_]} = wings_text:break_lines([Label], Limit),
     Lines = lists:foldr(fun(Row, Acc) when Row =:= First -> [Row|Acc];
@@ -222,10 +342,12 @@ build(true, {label, Label, Flags}, Parent, Sizer, In) ->
     Text = wxStaticText:new(Parent, ?wxID_ANY, Lines),
     add_sizer(label, Sizer, Text),
     In;
-build(true, panel, _Parent, Sizer, In) ->
+build(Ask, panel, _Parent, Sizer, In)
+  when Ask =/= false ->
     wxSizer:addSpacer(Sizer, 20),
     In;
-build(true, separator, Parent, Sizer, In) ->
+build(Ask, separator, Parent, Sizer, In)
+  when Ask =/= false ->
     Separator = wxStaticLine:new(Parent),
     add_sizer(separator, Sizer, Separator),
     In;
@@ -235,7 +357,13 @@ build(Ask, {text, Def}, Parent, Sizer, In) ->
 build(Ask, {text, Def, Flags}, Parent, Sizer, In) ->
     {_Max0,Validator,_Charset} = wings_ask:validator(Def, Flags),
     Create = fun() ->
+		     PreviewFun = notify_event_handler(Ask, preview),
 		     Ctrl = wxTextCtrl:new(Parent, ?wxID_ANY, [{value, to_str(Def)}]),
+		     TextUpdated = fun(#wx{event=#wxCommand{cmdString=Str}},_) ->
+					   io:format("Validator: '~p' => ~p~n", [Str, Validator(Str)]),
+					   (Validator(Str) == ok) andalso PreviewFun()
+				   end,
+		     wxTextCtrl:connect(Ctrl, command_text_updated, [{callback, TextUpdated}]),
 		     add_sizer(text, Sizer, Ctrl),
 		     Ctrl
 	     end,
@@ -244,7 +372,7 @@ build(Ask, {text, Def, Flags}, Parent, Sizer, In) ->
 
 build(Ask, {slider, {text, Def, Flags}}, Parent, Sizer, In) ->
     {_Max0,Validator,_Charset} = wings_ask:validator(Def, Flags),
-    Create = fun() -> create_slider(Def, Flags, Validator, Parent, Sizer) end,
+    Create = fun() -> create_slider(Ask, Def, Flags, Validator, Parent, Sizer) end,
     [#in{key=proplists:get_value(key,Flags), def=Def,
 	 type=text, wx=create(Ask,Create), validator=Validator}|In];
 
@@ -270,10 +398,10 @@ build(Ask, {button, {text, Def, Flags}}, Parent, Sizer, In) ->
 				save_dialog -> ?wxFLP_SAVE
 			    end,
 		     Filter = wings_file:file_filters(Props),
-		     Ctrl = wxFilePickerCtrl:new(Parent, ?wxID_ANY, 
+		     Ctrl = wxFilePickerCtrl:new(Parent, ?wxID_ANY,
 						 [{style, What bor ?wxFLP_USE_TEXTCTRL},
-						  {path, Def}, 
-						  {wildcard, Filter}]), 
+						  {path, Def},
+						  {wildcard, Filter}]),
 		     add_sizer(button, Sizer, Ctrl),
 		     Ctrl
 	     end,
@@ -367,20 +495,20 @@ build(Ask, Q, _Parent, _Sizer, In) ->
 	      [?MODULE,?LINE,Ask,Q, erlang:process_info(self(), current_stacktrace)]),
     In.
 
-build_box(true, Type, Qs, Flags, Parent, Top, In0) ->
+build_box(false, _Type, Qs, _, Parent, _Top, In0) ->
+    lists:foldl(fun(Q, Input) ->
+			build(false, Q, Parent, undefined, Input)
+		end, In0, Qs);
+build_box(Ask, Type, Qs, Flags, Parent, Top, In0) ->
     Sizer = case proplists:get_value(title, Flags) of
 		undefined -> wxBoxSizer:new(Type);
 		Title -> wxStaticBoxSizer:new(Type, Parent, [{label, Title}])
 	    end,
     Input = lists:foldl(fun(Q, Input) ->
-				build(true, Q, Parent, Sizer, Input)
+				build(Ask, Q, Parent, Sizer, Input)
 			end, In0, Qs),
     add_sizer({box, Type}, Top, Sizer),
-    Input;
-build_box(false, _Type, Qs, _, Parent, _Top, In0) ->
-    lists:foldl(fun(Q, Input) ->
-			build(false, Q, Parent, undefined, Input)
-		end, In0, Qs).
+    Input.
 
 build_radio(Ask, Name, Def, Direction, Alternatives, Parent, Sizer, In) ->
     {Strs,Keys} = lists:unzip(Alternatives),
@@ -395,7 +523,7 @@ build_radio(Ask, Name, Def, Direction, Alternatives, Parent, Sizer, In) ->
 	     end,
     [#in{def=Def, type=radiobox, wx=create(Ask, Create), data=Keys}|In].
 
-create_slider(Def, Flags, Validator, Parent, TopSizer) when is_number(Def) ->
+create_slider(Ask, Def, Flags, Validator, Parent, TopSizer) when is_number(Def) ->
     Range = proplists:get_value(range, Flags),
     Sizer = wxBoxSizer:new(?wxHORIZONTAL),
     {Min, Value, Max, Style, ToText, ToSlider} = slider_style(Def, Range),
@@ -404,13 +532,17 @@ create_slider(Def, Flags, Validator, Parent, TopSizer) when is_number(Def) ->
     wxSizer:add(Sizer, Slider, [{proportion,3}, {flag, ?wxEXPAND}]),
     wxSizer:add(Sizer, Text,   [{proportion,1}]),
     add_sizer(slider, TopSizer, Sizer),
-    UpdateText = fun(#wx{event=#wxScroll{commandInt=Where}}, _) ->
+    PreviewFun = notify_event_handler(Ask, preview),
+    UpdateText = fun(#wx{event=#wxCommand{commandInt=Where}}, _) ->
+			 PreviewFun(),
 			 wxTextCtrl:setValue(Text, to_str(ToText(Where)))
 		 end,
-    wxSlider:connect(Slider, scroll_thumbtrack, [{callback, UpdateText}]),
+    wxSlider:connect(Slider, command_slider_updated, [{callback, UpdateText}]),
     UpdateSlider = fun(#wx{event=#wxCommand{cmdString=Str}}, _) ->
 			   case Validator(Str) of
-			       ok -> wxSlider:setValue(Slider, ToSlider(Str));
+			       ok ->
+				   PreviewFun(),
+				   wxSlider:setValue(Slider, ToSlider(Str));
 			       _ -> ignore
 			   end
 		   end,
@@ -457,14 +589,16 @@ sizer_flags(_, ?wxHORIZONTAL)         -> {1, 0, ?wxALIGN_CENTER_VERTICAL};
 sizer_flags(_, ?wxVERTICAL)           -> {0, 0, ?wxEXPAND}.
 
 create(false, _) -> undefined;
-create(true, Fun) -> Fun().
+create(_, Fun) -> Fun().
 
 to_str(Number) when is_integer(Number) ->
     integer_to_list(Number);
 to_str(Float) when is_float(Float) ->
     wings_util:nice_float(Float);
 to_str(List = [C|_]) when is_integer(C) ->
-    List.
+    List;
+to_str([]) -> [].
+
 
 pos(C, S) -> pos(C, S, 0).
 pos(C, [C|_Cs], I) -> I;

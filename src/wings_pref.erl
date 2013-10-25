@@ -665,9 +665,6 @@ pref(Action) -> %% load|save dialog
     case Action of
         load ->
 	    Title = ?__(1,"Load Preference Subset"),
-	    Button = [{button,
-		       ?__(14,"Select Valid Preference Fields for Current File"),
-		       done,[{key,update}]},separator],
 	    Dialog = open_dialog,
 	    Options =
 		[separator,
@@ -676,7 +673,6 @@ pref(Action) -> %% load|save dialog
 			   merge}],[{hook,Disable}]},panel];
         save ->
 	    Title = ?__(2,"Save Preference Subset"),
-	    Button = [],
 	    Dialog = save_dialog,
 	    Options = [panel]
     end,
@@ -696,7 +692,7 @@ pref(Action) -> %% load|save dialog
 		   [{key, pref_directory},
 		    {props, [{dialog_type, Dialog},
 			     {extensions, [{".pref", "Preference Subset"}]}]}]}}],
-    Qs = Button ++ PrefFeilds ++ Options ++ FileBrowser,
+    Qs = PrefFeilds ++ Options ++ FileBrowser,
     Do = fun(Res) ->
 		 case lists:keyfind(update, 1, Res) of
 		     {_,true} ->

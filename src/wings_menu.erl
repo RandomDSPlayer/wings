@@ -1866,13 +1866,13 @@ create_menu([{submenu, Desc, {Name, SubMenu0}}|Rest], Id, Names, HotKeys, Menu)
     wxMenu:append(Menu, ?wxID_ANY, Desc, SMenu),
     create_menu(Rest, NextId, Names, HotKeys, Menu);
 create_menu([MenuEntry|Rest], Id, Names, HotKeys, Menu) ->
-    MenuItem = menu_item(MenuEntry, Id, Names, HotKeys),
+    MenuItem = menu_item(MenuEntry, Menu, Id, Names, HotKeys),
     wxMenu:append(Menu, MenuItem),
     create_menu(Rest, Id+1, Names, HotKeys, Menu);
 create_menu([], NextId, _, _, _) -> 
     NextId.
 
-menu_item({Desc0, Name, Help, Props}, Id, Names, HotKeys) ->
+menu_item({Desc0, Name, Help, Props}, Parent, Id, Names, HotKeys) ->
     Desc = case match_hotkey(Name, HotKeys, have_option_box(Props)) of
 	       [] -> Desc0;
 	       KeyStr -> Desc0 ++ "\t" ++ KeyStr
@@ -1881,8 +1881,15 @@ menu_item({Desc0, Name, Help, Props}, Id, Names, HotKeys) ->
 		 false -> Id;
 		 PId  -> PId
 	     end,
-    true = ets:insert(wings_menus, #menu_entry{name=build_command(Name, Names), wxid=MenuId}),
-    wxMenuItem:new([{id,MenuId}, {text,Desc}, {help,Help}]).
+    Command = case have_option_box(Props) of
+		  true ->
+		      io:format("Menu still have option box ~p ~s~n",[Name, Desc0]),
+		      {Name, true};
+		  false ->
+		      Name
+	      end,
+    true = ets:insert(wings_menus, #menu_entry{name=build_command(Command, Names), wxid=MenuId}),
+    wxMenuItem:new([{parentMenu, Parent}, {id,MenuId}, {text,Desc}, {help,Help}]).
 
 %% We want to use the prefdefined id where they exist (mac) needs for it's
 %% specialized menus but we want our shortcuts hmm.
