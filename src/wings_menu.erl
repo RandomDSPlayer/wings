@@ -1801,8 +1801,8 @@ mk_key_item(Key, Keyname, Cmd, _Src) ->
 
 wx_command_event(Id) ->
     case ets:lookup(wings_menus, Id) of
-	[#menu_entry{name=Name}] -> {action, Name};
-	[] -> 
+	[#menu_entry{name=Name}] -> {menubar, {action, Name}};
+	[] ->
 	    io:format("~p:~p: Unmatched event Id ~p~n",[?MODULE,?LINE,Id]),
 	    ignore
     end.
@@ -1848,7 +1848,9 @@ normalize_menu(separator, Acc) ->
 normalize_menu({S,Name,Help,Ps}, Acc) ->
     [{S,Name,Help,Ps}|Acc];
 normalize_menu({S, {Name, SubMenu}}, Acc0) ->
-    [{submenu, S, {Name, SubMenu}}|Acc0];
+    [{submenu, S, {Name, SubMenu}, []}|Acc0];
+normalize_menu({S, {Name, SubMenu}, Help}, Acc0) ->
+    [{submenu, S, {Name, SubMenu}, Help}|Acc0];
 normalize_menu({S,Name}, Acc) ->
     [{S,Name,[],[]}|Acc];
 normalize_menu({S,Name,[C|_]=Help}, Acc)
@@ -1860,16 +1862,16 @@ normalize_menu({S,Name,Ps}, Acc) ->
 create_menu([separator|Rest], Id, Names, HotKeys, Menu) ->
     wxMenu:appendSeparator(Menu),
     create_menu(Rest, Id, Names, HotKeys, Menu);
-create_menu([{submenu, Desc, {Name, SubMenu0}}|Rest], Id, Names, HotKeys, Menu)
+create_menu([{submenu, Desc, {Name, SubMenu0}, Help}|Rest], Id, Names, HotKeys, Menu)
   when is_list(SubMenu0) ->
     {SMenu, NextId} = setup_menu([Name|Names], Id, SubMenu0),
-    wxMenu:append(Menu, ?wxID_ANY, Desc, SMenu),
+    wxMenu:append(Menu, ?wxID_ANY, Desc, SMenu, [{help, Help}]),
     create_menu(Rest, NextId, Names, HotKeys, Menu);
 create_menu([MenuEntry|Rest], Id, Names, HotKeys, Menu) ->
     MenuItem = menu_item(MenuEntry, Menu, Id, Names, HotKeys),
     wxMenu:append(Menu, MenuItem),
     create_menu(Rest, Id+1, Names, HotKeys, Menu);
-create_menu([], NextId, _, _, _) -> 
+create_menu([], NextId, _, _, _) ->
     NextId.
 
 menu_item({Desc0, Name, Help, Props}, Parent, Id, Names, HotKeys) ->
@@ -1877,7 +1879,7 @@ menu_item({Desc0, Name, Help, Props}, Parent, Id, Names, HotKeys) ->
 	       [] -> Desc0;
 	       KeyStr -> Desc0 ++ "\t" ++ KeyStr
 	   end,
-    MenuId = case predefined_item(Name) of
+    MenuId = case predefined_item(hd(Names),Name) of
 		 false -> Id;
 		 PId  -> PId
 	     end,
@@ -1894,15 +1896,14 @@ menu_item({Desc0, Name, Help, Props}, Parent, Id, Names, HotKeys) ->
 %% We want to use the prefdefined id where they exist (mac) needs for it's
 %% specialized menus but we want our shortcuts hmm.
 %% We also get little predefined icons for OS's that have that.
-predefined_item(about)   -> ?wxID_ABOUT;
-predefined_item(help)    -> ?wxID_HELP;
-predefined_item(quit)    -> ?wxID_EXIT;
-predefined_item(new)     -> ?wxID_NEW;
-predefined_item(open)    -> ?wxID_OPEN;
-predefined_item(save)    -> ?wxID_SAVE;
-predefined_item(save_as) -> ?wxID_SAVEAS;
-predefined_item(revert)  -> ?wxID_REVERT;
-predefined_item(undo)    -> ?wxID_UNDO;
-predefined_item(redo)    -> ?wxID_REDO;
-predefined_item(_) ->  false.
-    
+predefined_item(help, about)   -> ?wxID_ABOUT;
+predefined_item(help, help)    -> ?wxID_HELP;
+predefined_item(file, quit)    -> ?wxID_EXIT;
+predefined_item(file, new)     -> ?wxID_NEW;
+predefined_item(file, open)    -> ?wxID_OPEN;
+predefined_item(file, save)    -> ?wxID_SAVE;
+predefined_item(file, save_as) -> ?wxID_SAVEAS;
+predefined_item(file, revert)  -> ?wxID_REVERT;
+predefined_item(edit, undo)    -> ?wxID_UNDO;
+predefined_item(edit, redo)    -> ?wxID_REDO;
+predefined_item(_, _) ->  false.
