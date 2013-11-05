@@ -166,22 +166,22 @@ init() ->
 					 ?wxFULL_REPAINT_ON_RESIZE}
 				   ]),
 
-    Manager = wxAuiManager:new([{managed_wnd, Frame}]),
-    Pane = wxAuiPaneInfo:new(),
-    wxAuiPaneInfo:centrePane(Pane),
-    wxAuiPaneInfo:paneBorder(Pane, [{visible, false}]),
-    wxAuiManager:addPane(Manager, Canvas, Pane),
-    %% Test 
-    TextCtrl = wxTextCtrl:new(Frame, ?wxID_ANY, 
-			      [{size, {300,200}},
-			       {value, "An empty pane"},
-			       {style, ?wxDEFAULT bor ?wxTE_MULTILINE}]),
+    %% Manager = wxAuiManager:new([{managed_wnd, Frame}]),
+    %% Pane = wxAuiPaneInfo:new(),
+    %% wxAuiPaneInfo:centrePane(Pane),
+    %% wxAuiPaneInfo:paneBorder(Pane, [{visible, false}]),
+    %% wxAuiManager:addPane(Manager, Canvas, Pane),
+    %% %% Test 
+    %% TextCtrl = wxTextCtrl:new(Frame, ?wxID_ANY, 
+    %% 			      [{size, {300,200}},
+    %% 			       {value, "An empty pane"},
+    %% 			       {style, ?wxDEFAULT bor ?wxTE_MULTILINE}]),
     
-    wxAuiManager:addPane(Manager, TextCtrl, 
-    			 wxAuiPaneInfo:caption(
-    			   wxAuiPaneInfo:right(
-    			     wxAuiPaneInfo:new()), "One")),
-    wxAuiManager:update(Manager),
+    %% wxAuiManager:addPane(Manager, TextCtrl, 
+    %% 			 wxAuiPaneInfo:caption(
+    %% 			   wxAuiPaneInfo:right(
+    %% 			     wxAuiPaneInfo:new()), "One")),
+    %% wxAuiManager:update(Manager),
 
     put(top_frame, Frame),
     put(gl_canvas, Canvas),
