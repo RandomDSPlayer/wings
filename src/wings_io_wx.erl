@@ -300,7 +300,9 @@ wx_translate_1(#wx{event=#wxPaint{}}) ->
 wx_translate_1(#wx{event=Ev=#wxMouse{}}) ->
     sdl_mouse(Ev);
 wx_translate_1(#wx{event=Ev=#wxKey{}}) ->
-    sdl_key(Ev);
+    R = sdl_key(Ev),
+%%    erlang:display(R),
+    R;
 wx_translate_1(#wx{event=#wxClose{}}) ->
     quit;
 wx_translate_1(#wx{event=#wxSize{size={W,H}}}) ->
