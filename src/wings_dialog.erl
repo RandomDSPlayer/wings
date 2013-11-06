@@ -174,6 +174,8 @@ event_handler(preview, #eh{fs=Fields, apply=Fun, owner=Owner}) ->
 	{preview,Action,#st{}=St}->
 	    wings_wm:send_after_redraw(Owner, {action,Action}),
 	    wings_wm:send(Owner, {current_state,St});
+	Action = {numeric_preview, _} ->
+	    wings_wm:send(Owner, {action,Action});
 	Action when is_tuple(Action); is_atom(Action) ->
 	    io:format("~p:~p: ~p~n",[?MODULE,?LINE,{preview,[Owner,{action,Action}]}]),
 	    wings_wm:send(Owner, {action,Action})
@@ -205,9 +207,9 @@ get_output1(_, In=#in{type=choice, wx=Ctrl}) ->
 get_output1(_, In=#in{type=text, def=Def, wx=Ctrl, validator=Validate}) ->
     Str = wxTextCtrl:getValue(Ctrl),
     Res = if is_integer(Def) ->
-		  wings_ask:eval_integer(validate(Validate, Str));
+		  validate(Validate, Str, Def);
 	     is_float(Def)  ->
-		  wings_ask:eval_float(validate(Validate, Str));
+		  validate(Validate, Str, Def);
 	     is_list(Def) ->
 		  Str
 	  end,
@@ -223,12 +225,6 @@ get_output1(Result, In=#in{type=dialog_buttons}) ->
 
 with_key(#in{key=undefined}, Value) -> Value;
 with_key(#in{key=Key}, Value) ->  {Key, Value}.
-
-validate(Fun, Input) ->
-    case Fun(Input) of
-	ok -> Input;
-	Str when is_list(Str) -> Str
-    end.
 
 return_result(Fun, Values, Owner) ->
     case Fun(Values) of
@@ -355,13 +351,15 @@ build(Ask, separator, Parent, Sizer, In)
 build(Ask, {text, Def}, Parent, Sizer, In) ->
     build(Ask, {text, Def, []}, Parent, Sizer, In);
 build(Ask, {text, Def, Flags}, Parent, Sizer, In) ->
-    {_Max0,Validator,_Charset} = wings_ask:validator(Def, Flags),
+    {_Max0,Validator} = validator(Def, Flags),
     Create = fun() ->
 		     PreviewFun = notify_event_handler(Ask, preview),
 		     Ctrl = wxTextCtrl:new(Parent, ?wxID_ANY, [{value, to_str(Def)}]),
 		     TextUpdated = fun(#wx{event=#wxCommand{cmdString=Str}},_) ->
-					   io:format("Validator: '~p' => ~p~n", [Str, Validator(Str)]),
-					   (Validator(Str) == ok) andalso PreviewFun()
+					   case Validator(Str) of
+					       {true, _} -> PreviewFun();
+					       false -> ignore
+					   end
 				   end,
 		     wxTextCtrl:connect(Ctrl, command_text_updated, [{callback, TextUpdated}]),
 		     add_sizer(text, Sizer, Ctrl),
@@ -371,7 +369,7 @@ build(Ask, {text, Def, Flags}, Parent, Sizer, In) ->
 	 type=text, wx=create(Ask,Create), validator=Validator}|In];
 
 build(Ask, {slider, {text, Def, Flags}}, Parent, Sizer, In) ->
-    {_Max0,Validator,_Charset} = wings_ask:validator(Def, Flags),
+    {_Max0,Validator} = validator(Def, Flags),
     Create = fun() -> create_slider(Ask, Def, Flags, Validator, Parent, Sizer) end,
     [#in{key=proplists:get_value(key,Flags), def=Def,
 	 type=text, wx=create(Ask,Create), validator=Validator}|In];
@@ -540,10 +538,11 @@ create_slider(Ask, Def, Flags, Validator, Parent, TopSizer) when is_number(Def) 
     wxSlider:connect(Slider, command_slider_updated, [{callback, UpdateText}]),
     UpdateSlider = fun(#wx{event=#wxCommand{cmdString=Str}}, _) ->
 			   case Validator(Str) of
-			       ok ->
+			       {true,Float} ->
 				   PreviewFun(),
-				   wxSlider:setValue(Slider, ToSlider(Str));
-			       _ -> ignore
+				   wxSlider:setValue(Slider, ToSlider(Float));
+			       _ -> 
+				   ignore
 			   end
 		   end,
     wxTextCtrl:connect(Text, command_text_updated, [{callback, UpdateSlider}]),
@@ -551,13 +550,11 @@ create_slider(Ask, Def, Flags, Validator, Parent, TopSizer) when is_number(Def) 
 
 slider_style(Def, {Min, Max})
   when is_integer(Def), Def >= Min, Def =< Max, Min < Max ->
-    ToText = fun(Value) -> Value end,
-    ToSlider = fun(Str) -> wings_ask:eval_integer(Str) end,
-    {Min, Def, Max, ?wxSL_HORIZONTAL bor ?wxSL_LABELS, ToText, ToSlider};
+    ToInt = fun(Value) -> Value end,
+    {Min, Def, Max, ?wxSL_HORIZONTAL bor ?wxSL_LABELS, ToInt, ToInt};
 slider_style(Def, {Min, Max})
   when is_float(Def), Def >= Min, Def =< Max, Min < Max ->
-    ToSlider = fun(ValueStr) ->
-		       Value = wings_ask:eval_float(ValueStr),
+    ToSlider = fun(Value) ->
 		       Step = (Max - Min) / 100,
 		       round((Value - Min) / Step)
 	       end,
@@ -565,7 +562,7 @@ slider_style(Def, {Min, Max})
 		     Step = (Max - Min) / 100,
 		     Min + Percent * Step
 	     end,
-    {0, ToSlider(to_str(Def)), 100, ?wxSL_HORIZONTAL, ToText, ToSlider}.
+    {0, ToSlider(Def), 100, ?wxSL_HORIZONTAL, ToText, ToSlider}.
 
 add_sizer(What, Sizer, Ctrl) ->
     {Propportion, Border, Flags} = sizer_flags(What, wxBoxSizer:getOrientation(Sizer)),
@@ -641,3 +638,113 @@ table_to_html({table, _, Header, Items}) ->
 table_row_to_html(Row) when is_list(Row) ->
     ["<tr>", ["<td>" ++ paragraph_to_html(Column) ++ "</td>" || Column <- Row], "</tr>"].
     
+%%%%%%%%%%%%%%%%%%%%
+validate(Fun, Input, Def) ->
+    case Fun(Input) of
+	{true, Value} -> Value;
+	false -> Def
+    end.
+
+validator(Val, Flags) when is_integer(Val) ->
+    integer_validator(Flags);
+validator(Val, Flags) when is_float(Val) ->
+    float_validator(Flags);
+validator(Val, _Flags) when is_list(Val) ->
+    {30, fun(Str) -> {true, Str} end}.
+
+integer_validator(Flags) ->
+    case proplists:get_value(range, Flags) of
+	undefined -> {8,accept_all_fun(integer)};
+	{'-infinity',infinity} -> {8,accept_all_fun(integer)};
+	{Min,infinity} when is_integer(Min) ->
+	    {8,integer_range(Min, infinity)};
+	{'-infinity',Max} when is_integer(Max) ->
+	    {8,integer_range('-infinity', Max)};
+	{Min,Max,Default} when is_integer(Min), is_integer(Max), is_integer(Default),
+			       Min =< Default, Default =< Max ->
+	    Digits = trunc(math:log(Max-Min+1)/math:log(10))+2,
+	    {Digits,integer_range(Min, Max, Default)};
+	{Min,Max} when is_integer(Min), is_integer(Max), Min =< Max ->
+	    Digits = trunc(math:log(Max-Min+1)/math:log(10))+2,
+	    {Digits,integer_range(Min, Max)}
+    end.
+
+float_validator(Flags) ->
+    case proplists:get_value(range, Flags) of
+	undefined -> {12,accept_all_fun(float)};
+	{'-infinity',infinity} -> {12,accept_all_fun(float)};
+	{Min,infinity} when is_float(Min) ->
+	    {12,float_range(Min, infinity)};
+	{'-infinity',Max} when is_float(Max) ->
+	    {12,float_range('-infinity', Max)};
+	{Min,Max,Default} when is_float(Min), is_float(Max), is_float(Default),
+			       Min =< Default, Default =< Max ->
+	    Digits = min(trunc(math:log(Max-Min+1)/math:log(10))+8, 20),
+	    {Digits,float_range(Min, Max, Default)};
+	{Min,Max} when is_float(Min), is_float(Max), Min =< Max ->
+	    Digits = min(trunc(math:log(Max-Min+1)/math:log(10))+8, 20),
+	    {Digits,float_range(Min, Max)}
+    end.
+
+integer_range(Min, Max, Default) ->
+    fun(Str) ->
+	    case wings_ask:eval_integer(Str) of
+		error -> false;
+		Int when Min =/= '-infinity', Int < Min -> 
+		    {true, Default};
+		Int when Max =/= infinity, Int > Max -> 
+		    {true, Max};
+		Int when is_integer(Int) -> {true, Int}
+	    end
+    end.
+
+integer_range(Min, Max) ->
+    fun(Str) ->
+	    case wings_ask:eval_integer(Str) of
+		error -> false;
+		Int when Min =/= '-infinity', Int < Min -> 
+		    {true, Min};
+		Int when Max =/= infinity, Int > Max -> 
+		    {true, Max};
+		Int when is_integer(Int) -> {true, Int}
+	    end
+    end.
+
+float_range(Min, Max, Default) ->
+    fun(Str) ->
+	    case wings_ask:eval_float(Str) of
+		error -> false;
+		Float when Min =/= '-infinity', Float < Min -> 
+		    {true, Default};
+		Float when Max =/= infinity, Float > Max -> 
+		    {true, Default};
+		Float when is_float(Float) -> {true, Float}
+	    end
+    end.
+
+float_range(Min, Max) ->
+    fun(Str) ->
+	    case wings_ask:eval_float(Str) of
+		error -> false;
+		Float when Min =/= '-infinity', Float < Min -> 
+		    {true, Min};
+		Float when Max =/= infinity, Float > Max -> 
+		    {true, Max};
+		Float when is_float(Float) -> {true, Float}
+	    end
+    end.
+
+accept_all_fun(integer) ->
+    fun(Str) -> 
+	    case wings_ask:eval_integer(Str) of
+		error -> false;
+		Number -> {true, Number}
+	    end
+    end;
+accept_all_fun(float) ->
+    fun(Str) ->
+	    case wings_ask:eval_float(Str) of
+		error -> false;
+		Number -> {true, Number}
+	    end
+    end.
