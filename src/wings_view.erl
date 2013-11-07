@@ -121,9 +121,9 @@ wireframe_crossmark(#st{sel=[],shapes=Shs}) ->
     {menubar,Client} = wings_wm:this(),
     Wire = wings_wm:get_prop(Client, wireframed_objects),
     case {gb_sets:size(Wire),gb_trees:size(Shs)} of
-	{0,_} -> [];
-	{Same,Same} -> [crossmark];
-	{_,_} -> [grey_crossmark]
+	{0,_} -> [{crossmark, false}];
+	{Same,Same} -> [{crossmark, true}];
+	{_,_} -> [{crossmark, grey}]
     end;
 wireframe_crossmark(#st{sel=Sel0}) ->
     {menubar,Client} = wings_wm:this(),
@@ -131,9 +131,9 @@ wireframe_crossmark(#st{sel=Sel0}) ->
     Sel = gb_sets:from_list([Id || {Id,_} <- Sel0]),
     Wire = gb_sets:intersection(Sel, Wire0),
     case {gb_sets:size(Wire),gb_sets:size(Sel)} of
-	{0,_} -> [];
-	{Same,Same} -> [crossmark];
-	{_,_} -> [grey_crossmark]
+	{0,_} -> [{crossmark, false}];
+	{Same,Same} -> [{crossmark, true}];
+	{_,_} -> [{crossmark, grey}]
     end.
 
 views_submenu(CurrentView, Views) ->

@@ -15,7 +15,7 @@
 -export([is_popup_event/1,menu/5,popup_menu/4,build_command/2,
 	 kill_menus/0]).
 
--export([wx_menubar/1, wx_command_event/1]).
+-export([wx_menubar/1, wx_command_event/1, check_item/1]).
 
 -define(NEED_OPENGL, 1).
 -define(NEED_ESDL, 1).
@@ -54,7 +54,7 @@
 	 orig_xy				%Originally input global X and Y
 	}).
 
--record(menu_entry, {wxid, name}).
+-record(menu_entry, {wxid, name, object, type}).
 
 %%%
 %%% Inside this module, each entry in a menu is kept in the following
@@ -1022,18 +1022,18 @@ draw_hotkey(_, _, _, []) -> ok;
 draw_hotkey(X, Y, Pos, Hotkey) -> wings_io:text_at(X+Pos, Y, Hotkey).
 
 draw_menu_text(X, Y, Text, Props) ->
-    case proplists:is_defined(crossmark, Props) of
+    case proplists:get_value(crossmark, Props) of
+	undefined ->
+	    wings_io:unclipped_text(X, Y, Text);
+	false ->
+	    wings_io:unclipped_text(X, Y, Text);
 	true ->
 	    wings_io:unclipped_text(X-2*?CHAR_WIDTH, Y, [crossmark,$\s|Text]);
-	false ->
-	    case proplists:is_defined(grey_crossmark, Props) of
-		false -> ok;
-		true ->
-		    gl:pushAttrib(?GL_CURRENT_BIT),
-		    gl:color3f(0.25, 0.25, 0.25),
-		    wings_io:unclipped_text(X-2*?CHAR_WIDTH, Y, [crossmark]),
-		    gl:popAttrib()
-	    end,
+	grey ->
+	    gl:pushAttrib(?GL_CURRENT_BIT),
+	    gl:color3f(0.25, 0.25, 0.25),
+	    wings_io:unclipped_text(X-2*?CHAR_WIDTH, Y, [crossmark]),
+	    gl:popAttrib(),
 	    wings_io:unclipped_text(X, Y, Text)
     end.
 
@@ -1807,6 +1807,14 @@ wx_command_event(Id) ->
 	    ignore
     end.
 
+check_item(Name) ->
+    case ets:match_object(wings_menus, #menu_entry{name=Name, type=?wxITEM_CHECK, _ = '_'}) of
+	[] -> ok;
+	[#menu_entry{object=MenuItem}] -> %% Toggle checkmark
+	    Checked = wxMenuItem:isChecked(MenuItem),
+	    wxMenuItem:check(MenuItem, [{check, not Checked}])
+    end.
+
 wx_menubar(Menus) ->
     ets:new(wings_menus, [named_table, {keypos,2}]),
     WinName = {menubar, geom},
@@ -1868,8 +1876,9 @@ create_menu([{submenu, Desc, {Name, SubMenu0}, Help}|Rest], Id, Names, HotKeys, 
     wxMenu:append(Menu, ?wxID_ANY, Desc, SMenu, [{help, Help}]),
     create_menu(Rest, NextId, Names, HotKeys, Menu);
 create_menu([MenuEntry|Rest], Id, Names, HotKeys, Menu) ->
-    MenuItem = menu_item(MenuEntry, Menu, Id, Names, HotKeys),
+    {MenuItem, Check} = menu_item(MenuEntry, Menu, Id, Names, HotKeys),
     wxMenu:append(Menu, MenuItem),
+    Check andalso wxMenuItem:check(MenuItem), %% Can not check until appended to menu..
     create_menu(Rest, Id+1, Names, HotKeys, Menu);
 create_menu([], NextId, _, _, _) ->
     NextId.
@@ -1878,6 +1887,7 @@ menu_item({Desc0, Name, Help, Props}, Parent, Id, Names, HotKeys) ->
     Desc = case match_hotkey(Name, HotKeys, have_option_box(Props)) of
 	       [] -> Desc0;
 	       KeyStr -> Desc0 ++ "\t' " ++ KeyStr ++ " '"
+	       %%KeyStr -> Desc0 ++ "\t" ++ KeyStr
 	   end,
     MenuId = case predefined_item(hd(Names),Name) of
 		 false -> Id;
@@ -1890,8 +1900,16 @@ menu_item({Desc0, Name, Help, Props}, Parent, Id, Names, HotKeys) ->
 		  false ->
 		      Name
 	      end,
-    true = ets:insert(wings_menus, #menu_entry{name=build_command(Command, Names), wxid=MenuId}),
-    wxMenuItem:new([{parentMenu, Parent}, {id,MenuId}, {text,Desc}, {help,Help}]).
+    {Type,Check} = case proplists:get_value(crossmark, Props) of
+		       undefined -> {?wxITEM_NORMAL, false};
+		       false -> {?wxITEM_CHECK, false};
+		       _ -> {?wxITEM_CHECK, true} %% grey or true
+		   end,
+    MI = wxMenuItem:new([{parentMenu, Parent}, {id,MenuId},
+			 {text,Desc}, {kind, Type}, {help,Help}]),
+    true = ets:insert(wings_menus, #menu_entry{name=build_command(Command, Names),
+					       object=MI, wxid=MenuId, type=Type}),
+    {MI, Check}.
 
 %% We want to use the prefdefined id where they exist (mac) needs for it's
 %% specialized menus but we want our shortcuts hmm.

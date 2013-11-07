@@ -595,6 +595,7 @@ execute_command(Cmd, Ev, St) ->
     %% we know may be from an ancient version Wings or for a
     %% plug-in that has been disabled.
     try
+	wings_menu:check_item(Cmd),
 	command(Cmd, St)
     catch
 	error:_ ->
@@ -1003,11 +1004,11 @@ tool_dirs(Tool) ->
 
 patches() ->
     case wings_start:get_patches() of
-    none -> [];
-    {enabled,Desc} ->
-        [separator,{?__(1,"Use ")++Desc,disable_patches,[crossmark]}];
-    {disabled,Desc} ->
-        [separator,{?__(1,"Use ")++Desc,enable_patches}]
+	none -> [];
+	{enabled,Desc} ->
+	    [separator,{?__(1,"Use ")++Desc,disable_patches,[{crossmark, true}]}];
+	{disabled,Desc} ->
+	    [separator,{?__(1,"Use ")++Desc,enable_patches,[{crossmark, false}]}]
     end.
 
 set_temp_sel(#st{sh=Sh,selmode=Mode}, St) ->

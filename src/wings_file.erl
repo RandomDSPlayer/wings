@@ -171,10 +171,7 @@ menu(_) ->
      separator|recent_files(Tail)].
 
 save_unused_mats() ->
-    case wings_pref:get_value(save_unused_materials) of
-	  true -> [crossmark];
-	  false -> []
-    end.
+    wings_menu_util:crossmark(save_unused_materials).
 
 command(new, St) ->
     new(St);
