@@ -919,7 +919,9 @@ is_submenu(I, #mi{type=plain,menu=Menu}) when is_integer(I) ->
 is_submenu(_, _) -> false.
 
 build_command(Name, Names) ->
-    foldl(fun(N, A) -> {N,A} end, Name, Names).
+    foldl(fun(N, Use={N, _}) -> Use;
+	     (N, A) -> {N,A} end, 
+	  Name, Names).
 
 menu_draw(_X, _Y, _Shortcut, _Mw, _I, [], _Mi) -> ok;
 menu_draw(X, Y, Shortcut, Mw, I, [H|Hs], #mi{sel_side=Side,menu=Menu,type=Type}=Mi) ->
@@ -1845,27 +1847,27 @@ setup_menu(Names, Id, Menus0) ->
 	     end,
     Menus2  = wings_plugin:menu(list_to_tuple(reverse(Names)), Menus1),
     Hotkeys = wings_hotkey:matching(Names),
-    Menus = lists:foldr(fun(Entry, Acc) -> 
-				normalize_menu(Entry, Acc)
-			end, [], Menus2),
+    Menus = [normalize_menu(Entry) || Entry <- Menus2],
     Next = create_menu(Menus, Id, Names, Hotkeys, Menu),
     {Menu, Next}.
 
-normalize_menu(separator, Acc) ->
-    [separator|Acc];
-normalize_menu({S,Name,Help,Ps}, Acc) ->
-    [{S,Name,Help,Ps}|Acc];
-normalize_menu({S, {Name, SubMenu}}, Acc0) ->
-    [{submenu, S, {Name, SubMenu}, []}|Acc0];
-normalize_menu({S, {Name, SubMenu}, Help}, Acc0) ->
-    [{submenu, S, {Name, SubMenu}, Help}|Acc0];
-normalize_menu({S,Name}, Acc) ->
-    [{S,Name,[],[]}|Acc];
-normalize_menu({S,Name,[C|_]=Help}, Acc)
+normalize_menu(separator) -> separator;
+normalize_menu({S,Fun,Help,Ps}) when is_function(Fun) ->
+    Name = Fun(1, []),
+    {S,Name,Help,Ps};
+normalize_menu({S,Name,Help,Ps}) ->
+    {S,Name,Help,Ps};
+normalize_menu({S, {Name, SubMenu}}) ->
+    {submenu, S, {Name, SubMenu}, []};
+normalize_menu({S, {Name, SubMenu}, Help}) ->
+    {submenu, S, {Name, SubMenu}, Help};
+normalize_menu({S,Name}) ->
+    {S,Name,[],[]};
+normalize_menu({S,Name,[C|_]=Help})
   when is_integer(C) ->
-    [{S,Name,Help,[]}|Acc];
-normalize_menu({S,Name,Ps}, Acc) ->
-    [{S,Name,[],Ps}|Acc].
+    {S,Name,Help,[]};
+normalize_menu({S,Name,Ps}) ->
+    {S,Name,[],Ps}.
 
 create_menu([separator|Rest], Id, Names, HotKeys, Menu) ->
     wxMenu:appendSeparator(Menu),
