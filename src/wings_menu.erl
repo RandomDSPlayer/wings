@@ -1791,7 +1791,7 @@ hotkey_delete_dialog(Hotkeys) ->
 		  ignore
 	  end,
     Dialog = mk_dialog(Hotkeys),
-    wings_ask:dialog(?__(1,"Delete Hotkeys"), Dialog, Fun).
+    wings_dialog:dialog(?__(1,"Delete Hotkeys"), Dialog, Fun).
 
 mk_dialog([{Key,Keyname,Cmd,Src}|T]) ->
     [mk_key_item(Key, Keyname, Cmd, Src)|mk_dialog(T)];

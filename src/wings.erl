@@ -124,7 +124,7 @@ init(File) ->
     wings_file:init_autosave(),
     init_menubar(),
     wings_pb:init(),
-    wings_ask:init(),
+    wings_dialog:init(),
     wings_job:init(),
     wings_develop:init(),
     wings_tweak:init(),

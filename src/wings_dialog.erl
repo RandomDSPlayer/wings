@@ -12,7 +12,8 @@
 -module(wings_dialog).
 -define(NEED_ESDL, 1). %% Needs to send mouseevents to camera
 -include("wings.hrl").
--export([info/3, 
+-export([init/0,
+	 info/3, 
 	 ask/3, ask/4, 
 	 dialog/3, dialog/4]).
 
@@ -20,6 +21,9 @@
 
 -record(in, {key, type, def, wx, validator, data}).
 -record(eh, {dialog, fs, apply, owner, type}).
+
+init() ->
+    init_history().
 
 %% Display a text window (Info converted to html)
 info(Title, Info, Options) ->
@@ -355,13 +359,32 @@ build(Ask, {text, Def, Flags}, Parent, Sizer, In) ->
     Create = fun() ->
 		     PreviewFun = notify_event_handler(Ask, preview),
 		     Ctrl = wxTextCtrl:new(Parent, ?wxID_ANY, [{value, to_str(Def)}]),
+		     Type = type(Def),
 		     TextUpdated = fun(#wx{event=#wxCommand{cmdString=Str}},_) ->
 					   case Validator(Str) of
 					       {true, _} -> PreviewFun();
 					       false -> ignore
 					   end
 				   end,
+		     UseHistory = fun(Ev, Obj) ->
+					  case use_history(Ev, Type, Ctrl) of
+					      {true, Prev}  -> 
+						  add_history(Type, Prev),
+						  PreviewFun();
+					      false -> 
+						  wxEvent:skip(Obj)
+					  end
+				  end,
+		     AddHistory = fun(_,_) -> 
+					  Str = wxTextCtrl:getValue(Ctrl),
+					  case Validator(Str) of
+					      {true, _} -> add_history(Type, Str);
+					      false -> ignore
+					  end
+				  end,
+		     wxTextCtrl:connect(Ctrl, key_up, [{callback, UseHistory}]),
 		     wxTextCtrl:connect(Ctrl, command_text_updated, [{callback, TextUpdated}]),
+		     wxTextCtrl:connect(Ctrl, kill_focus, [{callback, AddHistory}]),
 		     add_sizer(text, Sizer, Ctrl),
 		     Ctrl
 	     end,
@@ -747,4 +770,68 @@ accept_all_fun(float) ->
 		error -> false;
 		Number -> {true, Number}
 	    end
+    end.
+
+%%%
+%%%% History functions
+
+type(Val) when is_integer(Val) -> int;
+type(Val) when is_float(Val) -> float;
+type(Val) when is_list(Val) -> string.
+
+init_history() ->
+    ets:new(wings_history, [named_table, public]),
+    ets:insert(wings_history, {{string, next}, 0}),
+    ets:insert(wings_history, {{float, next}, 0}),
+    ets:insert(wings_history, {{int, next}, 0}).
+
+use_history(#wx{event=#wxKey{keyCode=?WXK_UP}}, Type, Ctrl) ->
+    read_hist(Type, -1, Ctrl);
+use_history(#wx{event=#wxKey{keyCode=?WXK_DOWN}}, Type, Ctrl) ->
+    read_hist(Type, 1, Ctrl);
+use_history(#wx{event=#wxKey{controlDown=true, keyCode=$P}}, Type, Ctrl) ->
+    read_hist(Type, -1, Ctrl);
+use_history(#wx{event=#wxKey{controlDown=true, keyCode=$N}}, Type, Ctrl) ->
+    read_hist(Type, 1, Ctrl);
+use_history(#wx{event=_Key}, _, _) ->
+    false.
+
+add_history(_Type, []) ->  %% No empty strings in history..
+    true;
+add_history(Type, [_|_]=Val) 
+  when Type == float; Type == int; Type == string ->
+    [{_,Key}] = ets:lookup(wings_history, {Type,next}),
+    case ets:lookup(wings_history, {Type,Key-1}) of
+	[{_, Val}] -> %% Already the last history entry
+	    true;
+	_ ->
+	    ets:insert(wings_history, {{Type, Key}, Val}),
+	    ets:insert(wings_history, {{Type, next}, Key+1}),
+	    ets:delete(wings_history, {Type,pos})
+    end.
+
+reset_history() ->
+    ets:delete(wings_history, {int,pos}),
+    ets:delete(wings_history, {float,pos}),
+    ets:delete(wings_history, {string,pos}).
+
+read_hist(Type, Step, Ctrl) ->
+    [{_, Next}] = ets:lookup(wings_history, {Type,next}),
+    Curr0 = case ets:lookup(wings_history, {Type,pos}) of
+		[] ->  Next;
+		[{_,Key}] ->  Key
+	    end,
+    Curr1 = Curr0 + Step,
+    if Curr1 < 0 ->
+	    ets:insert(wings_history, {{Type,pos}, 0}),
+	    false;
+       Curr1 >= Next ->
+	    ets:delete(wings_history,{Type,pos}),
+	    false;
+       true ->
+	    ets:insert(wings_history, {{Type,pos}, Curr1}),
+	    [{_,Val}] = ets:lookup(wings_history, {Type,Curr1}),
+	    Prev = wxTextCtrl:getValue(Ctrl),
+	    wxTextCtrl:setValue(Ctrl, Val),
+	    {true, Prev}
     end.
