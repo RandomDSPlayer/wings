@@ -81,7 +81,8 @@ menu(X, Y, Owner, Name, Menu) ->
     menu_setup(plain, X, Y, Name, Menu, #mi{owner=Owner}).
 
 popup_menu(X, Y, Name, Menu) ->
-    menu_setup(popup, X, Y, Name, Menu, #mi{owner=wings_wm:this()}).
+    %%menu_setup(popup, X, Y, Name, Menu, #mi{owner=wings_wm:this()}).
+    wx_popup_menu(X,Y,Name,Menu).
 
 menu_setup(Type, X0, Y0, Name, Menu0, #mi{ns=Names0,level=Level0}=Mi0) ->
     Menu = case Name of
@@ -1801,6 +1802,90 @@ mk_dialog([]) ->
 mk_key_item(Key, Keyname, Cmd, _Src) ->
     {Keyname ++ ": " ++ Cmd,false,[{key,Key}]}.
 
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% Wx stuff
+
+wx_popup_menu(X0,Y0,Name,Menus0) ->
+    io:format("Popup ~p ~p~n", [Name, Menus0]),
+    Pos = wxWindow:clientToScreen(get(gl_canvas), X0,Y0),
+    HotKeys = wings_hotkey:matching([Name]),
+    Menus1 = if is_function(Menus0) -> Menus0(#st{}); %% FIXME
+		is_list(Menus0) -> Menus0
+	     end,
+    Menus2  = wings_plugin:menu(list_to_tuple(reverse([Name])), Menus1),
+
+    Entries = [normalize_menu(Entry, HotKeys) || Entry <- Menus2],
+    Dialog = wxDialog:new(get(top_frame), ?wxID_ANY, "Operation",
+			  [{style, ?wxSTAY_ON_TOP},
+			   {size, {100, 600}},
+			   {pos, Pos}
+			  ]),
+    Panel = wxPanel:new(Dialog),
+    Callback = {callback, fun(Ev, Obj) -> popup_event(Ev, Obj, Panel, Dialog, Entries) end},
+    wxPanel:connect(Panel,  left_up, [Callback]),
+    wxDialog:connect(Panel, left_up, [Callback]),
+    wxDialog:connect(Panel, left_down, [Callback]),
+    wxDialog:connect(Panel, mouse_capture_changed, [Callback]),
+    Main = wxBoxSizer:new(?wxVERTICAL),
+    setup_popup(Entries, 500, Main, Panel),
+    wxDialog:setSizerAndFit(Dialog, Main),
+    wxDialog:show(Dialog),
+    wxPanel:captureMouse(Dialog),
+    keep.
+
+popup_event(Ev, Obj, Panel, Dialog, _Entries) ->
+    io:format("Got Ev ~p (~p) closing~n", [Ev, Obj]),
+    wxDialog:releaseMouse(Panel),
+    wxDialog:destroy(Dialog).
+
+setup_popup([separator|Es], Id, Sizer, Parent) ->
+    Line = wxStaticLine:new(Parent),
+    wxSizer:add(Sizer, Line, [{flag, ?wxEXPAND}]),
+    setup_popup(Es, Id, Sizer, Parent);
+setup_popup([{submenu, Desc, _, Help, _HK}|Es], Id, Sizer, Parent) ->
+    Line = wxStaticText:new(Parent, Id, Desc),
+    wxWindow:setToolTip(Line, wxToolTip:new(tooltip(Help, false))),
+    wxSizer:add(Sizer, Line, [{flag, ?wxEXPAND}]),
+    setup_popup(Es, Id+2, Sizer, Parent);
+setup_popup([{Desc, _Name, Help, Props, HK}|Es], Id, Sizer, Parent) ->
+    Line   = wxBoxSizer:new(?wxHORIZONTAL),
+    wxSizer:add(Line, Text = wxStaticText:new(Parent, Id, Desc),[{proportion, 4}]),
+    wxSizer:add(Line, wxStaticText:new(Parent, Id, HK),  [{proportion, 1}]),
+    case OpBox = have_option_box(Props) of
+	true ->
+	    Bitmap = wxArtProvider:getBitmap("wxART_LIST_VIEW",[{client, "wxART_MENU"}]),
+	    wxSizer:add(Line, wxStaticBitmap:new(Parent, Id+1, Bitmap));
+	false ->
+	    wxSizer:addSpacer(Sizer, 16)
+    end,
+    wxWindow:setToolTip(Text, wxToolTip:new(tooltip(Help, OpBox))),
+    wxSizer:add(Sizer, Line, [{flag, ?wxEXPAND}]),
+    setup_popup(Es, Id+2, Sizer, Parent);
+setup_popup([], _, _, _) -> ok.
+
+tooltip("", false) -> "";
+tooltip({Help}, OptBox) -> "Left mouse button: " ++ Help ++ opt_help(OptBox);
+tooltip(Help, OptBox) when is_list(Help) ->
+    tooltip({Help}, OptBox);
+tooltip({HelpL, HelpM}, OptBox) ->
+    io_lib:format("Left mouse button: ~ts~n"
+		  "Middle mouse button: ~ts~n",
+		  [HelpL, HelpM]) ++ opt_help(OptBox);
+tooltip({HelpL, HelpM, ""}, OptBox) ->
+    tooltip({HelpL,HelpM}, OptBox);
+tooltip({HelpL, HelpM, HelpR}, _) ->
+    io_lib:format("Left mouse button: ~ts~n"
+		  "Middle mouse button: ~ts~n"
+		  "Right mouse button: ~ts~n",
+		  [HelpL, HelpM, HelpR]).
+
+opt_help(true) ->
+    "\nRight mouse button: Open option dialog";
+opt_help(false) -> "".
+
+
+
 wx_command_event(Id) ->
     case ets:lookup(wings_menus, Id) of
 	[#menu_entry{name=Name}] -> {menubar, {action, Name}};
@@ -1841,52 +1926,63 @@ wx_menubar(Menus) ->
     ok.
 
 setup_menu(Names, Id, Menus0) ->
-    Menu = wxMenu:new(),
+    Menu   = wxMenu:new(),
     Menus1 = if is_function(Menus0) -> Menus0(#st{});
 		is_list(Menus0) -> Menus0
 	     end,
     Menus2  = wings_plugin:menu(list_to_tuple(reverse(Names)), Menus1),
-    Hotkeys = wings_hotkey:matching(Names),
-    Menus = [normalize_menu(Entry) || Entry <- Menus2],
-    Next = create_menu(Menus, Id, Names, Hotkeys, Menu),
+    HotKeys = wings_hotkey:matching(Names),
+    Menus = [normalize_menu(Entry, HotKeys) || Entry <- Menus2],
+    Next  = create_menu(Menus, Id, Names, Menu),
     {Menu, Next}.
 
-normalize_menu(separator) -> separator;
-normalize_menu({S,Fun,Help,Ps}) when is_function(Fun) ->
+normalize_menu(separator, _) -> separator;
+normalize_menu({S,Fun,Help,Ps}, Hotkeys) when is_function(Fun) ->
     Name = Fun(1, []),
-    {S,Name,Help,Ps};
-normalize_menu({S,Name,Help,Ps}) ->
-    {S,Name,Help,Ps};
-normalize_menu({S, {Name, SubMenu}}) ->
-    {submenu, S, {Name, SubMenu}, []};
-normalize_menu({S, {Name, SubMenu}, Help}) ->
-    {submenu, S, {Name, SubMenu}, Help};
-normalize_menu({S,Name}) ->
-    {S,Name,[],[]};
-normalize_menu({S,Name,[C|_]=Help})
+    HK = match_hotkey(Name, Hotkeys, have_option_box(Ps)),
+    {S,Name,Help,Ps,HK};
+normalize_menu({S,Name,Help,Ps}, Hotkeys) ->
+    HK = match_hotkey(Name, Hotkeys, have_option_box(Ps)),
+    {S,Name,Help,Ps,HK};
+normalize_menu({S, {Name, SubMenu}}, Hotkeys) ->
+    HK = match_hotkey(Name, Hotkeys, false),
+    {submenu, S, {Name, SubMenu}, [], HK};
+normalize_menu({S, {Name, SubMenu}, Help}, Hotkeys) ->
+    HK = match_hotkey(Name, Hotkeys, false),
+    {submenu, S, {Name, SubMenu}, Help, HK};
+normalize_menu({S,Name}, Hotkeys) ->
+    HK = match_hotkey(Name, Hotkeys, false),
+    {S,Name,[],[],HK};
+normalize_menu({S,Name,[C|_]=Help}, Hotkeys)
   when is_integer(C) ->
-    {S,Name,Help,[]};
-normalize_menu({S,Name,Ps}) ->
-    {S,Name,[],Ps}.
+    HK = match_hotkey(Name, Hotkeys, false),
+    {S,Name,Help,[], HK};
+normalize_menu({S,Name,Help}, Hotkeys)
+  when is_tuple(Help), tuple_size(Help) =< 3 ->
+    HK = match_hotkey(Name, Hotkeys, false),
+    {S,Name,Help,[], HK};
+normalize_menu({S,Name,Ps},Hotkeys) ->
+    HK = match_hotkey(Name, Hotkeys, have_option_box(Ps)),
+    {S,Name,[],Ps, HK}.
 
-create_menu([separator|Rest], Id, Names, HotKeys, Menu) ->
+create_menu([separator|Rest], Id, Names, Menu) ->
     wxMenu:appendSeparator(Menu),
-    create_menu(Rest, Id, Names, HotKeys, Menu);
-create_menu([{submenu, Desc, {Name, SubMenu0}, Help}|Rest], Id, Names, HotKeys, Menu)
+    create_menu(Rest, Id, Names, Menu);
+create_menu([{submenu, Desc, {Name, SubMenu0}, Help, _HK}|Rest], Id, Names, Menu)
   when is_list(SubMenu0) ->
     {SMenu, NextId} = setup_menu([Name|Names], Id, SubMenu0),
     wxMenu:append(Menu, ?wxID_ANY, Desc, SMenu, [{help, Help}]),
-    create_menu(Rest, NextId, Names, HotKeys, Menu);
-create_menu([MenuEntry|Rest], Id, Names, HotKeys, Menu) ->
-    {MenuItem, Check} = menu_item(MenuEntry, Menu, Id, Names, HotKeys),
+    create_menu(Rest, NextId, Names, Menu);
+create_menu([MenuEntry|Rest], Id, Names, Menu) ->
+    {MenuItem, Check} = menu_item(MenuEntry, Menu, Id, Names),
     wxMenu:append(Menu, MenuItem),
     Check andalso wxMenuItem:check(MenuItem), %% Can not check until appended to menu..
-    create_menu(Rest, Id+1, Names, HotKeys, Menu);
-create_menu([], NextId, _, _, _) ->
+    create_menu(Rest, Id+1, Names, Menu);
+create_menu([], NextId, _, _) ->
     NextId.
 
-menu_item({Desc0, Name, Help, Props}, Parent, Id, Names, HotKeys) ->
-    Desc = case match_hotkey(Name, HotKeys, have_option_box(Props)) of
+menu_item({Desc0, Name, Help, Props, HotKey}, Parent, Id, Names) ->
+    Desc = case HotKey of
 	       [] -> Desc0;
 	       KeyStr -> Desc0 ++ "\t' " ++ KeyStr ++ " '"
 	       %%KeyStr -> Desc0 ++ "\t" ++ KeyStr
@@ -1897,7 +1993,12 @@ menu_item({Desc0, Name, Help, Props}, Parent, Id, Names, HotKeys) ->
 	     end,
     Command = case have_option_box(Props) of
 		  true ->
-		      io:format("Menu still have option box ~p ~s~n",[Name, Desc0]),
+		      case lists:reverse(Desc0) of
+			  "..." ++ _ -> ok;
+			  _ ->
+			      io:format("Menu have option box ~p ~s~n",[Name, Desc0]),
+			      io:format("  it should be marked with ...~n",[])
+		      end,
 		      {Name, true};
 		  false ->
 		      Name
